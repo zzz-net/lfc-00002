@@ -219,6 +219,126 @@ python -m inventory_cli.cli rollback 1
 python -m inventory_cli.cli export output/after_rollback.csv
 ```
 
+### 8. 历史数据清理（prune）
+
+长期使用后会积累大量快照和批次数据，使用 `prune` 命令按规则清理。
+
+> **⚠️ 危险操作提示：删除不可恢复。强烈建议每次清理前先用 `--dry-run` 预演。**
+
+#### 8.1 命令总览
+
+```
+prune [--before TIME] [--keep N] [--prune-orphans] [--dry-run] [--database PATH]
+```
+
+**至少需要指定 `--before` 或 `--keep` 中的一个。** 同时指定两者时，满足任一条件的快照都会被删除（取并集）。
+
+| 参数 | 说明 |
+|------|------|
+| `--before <TIME>` | 删除创建时间早于该时间的快照。支持 ISO 格式：`2025-01-01` 或 `2025-01-01T10:00:00` |
+| `--keep <N>` | 只保留最近 N 个快照，更早的全部删除。N 为 0 时清空所有快照 |
+| `--prune-orphans` | 同时删除不再被任何保留快照引用的批次数据（inventory 表中的原始记录） |
+| `--dry-run` | 预演模式，只显示将要删除的内容，**不做任何实际修改** |
+| `--database <PATH>` | 指定数据库文件路径，默认 `inventory.db` |
+
+#### 8.2 第一步：先预演（dry-run）
+
+清理前务必先用 `--dry-run` 看清楚会删什么：
+
+```powershell
+# 只看快照删除情况（推荐先跑这个）
+python -m inventory_cli.cli prune --dry-run --keep 3
+
+# 同时看看哪些批次会被清理
+python -m inventory_cli.cli prune --dry-run --keep 3 --prune-orphans
+```
+
+输出示例：
+
+```
+=== DRY RUN - No changes will be made ===
+
+Snapshots to delete (2):
+------------------------------------------------------------------------------------------
+  ID  Created At            Batch ID                       Records
+------------------------------------------------------------------------------------------
+   2  2025-01-15 10:30:00   merged_20250115_103000               8
+   1  2025-01-10 14:20:00   merged_20250110_142000               8
+
+Batches to delete (1):
+  - old_batch_202412  (orphan)
+
+Note: 2 batches are still referenced by retained snapshots and will NOT be deleted:
+  - batch_store_a
+  - batch_store_b
+
+Summary: Would delete 2 snapshots and 1 batches
+Remove --dry-run to execute the prune operation.
+```
+
+确认无误后，去掉 `--dry-run` 实际执行。
+
+#### 8.3 只清理快照（保留批次数据）
+
+只删除旧快照，不碰原始批次数据。安全保守，推荐先用这个。
+
+```powershell
+# 只保留最近 5 个快照
+python -m inventory_cli.cli prune --keep 5
+
+# 删除 2025-01-01 之前的所有快照（含当天全天）
+python -m inventory_cli.cli prune --before 2025-01-01
+
+# 删除 2025-01-01 中午 12 点之前的快照
+python -m inventory_cli.cli prune --before 2025-01-01T12:00:00
+
+# 组合条件：保留最近 10 个，且删除 2024 年底前的（取并集）
+python -m inventory_cli.cli prune --keep 10 --before 2024-12-31
+```
+
+执行成功输出：
+
+```
+=== PRUNE COMPLETED ===
+Successfully deleted 2 snapshots
+Deleted snapshot IDs: [1, 2]
+Operation recorded in history. Use 'history' to view.
+```
+
+#### 8.4 连孤儿批次一起清理
+
+加上 `--prune-orphans` 会同时删除不再被任何保留快照引用的批次数据。
+
+> **什么是孤儿批次？** 导入了但从未合并进快照，或者所在的快照全部被删了，导致没有任何快照再引用的批次。
+
+```powershell
+# 保留最近 3 个快照，同时清理孤儿批次
+python -m inventory_cli.cli prune --keep 3 --prune-orphans
+
+# 先预演一下会删哪些批次
+python -m inventory_cli.cli prune --dry-run --keep 3 --prune-orphans
+```
+
+**注意：如果某个批次仍被保留的快照引用，即使它出现在待删除的快照里，也不会被删。** CLI 会明确提示哪些批次因为被保留快照引用而跳过。
+
+#### 8.5 清理后验证
+
+```powershell
+# 查看操作记录（prune 已写入历史）
+python -m inventory_cli.cli history
+
+# 查看剩余快照
+python -m inventory_cli.cli rollback
+
+# 查看剩余批次
+python -m inventory_cli.cli batches
+
+# 导出验证（确保当前数据完整）
+python -m inventory_cli.cli export output/after_prune.csv
+```
+
+清理动作是**原子**的 —— 要么全部成功，要么全部回滚，不会留下半清理状态。
+
 ---
 
 ## 错误场景说明
@@ -278,6 +398,9 @@ python tests/test_e2e.py
 
 # 运行配置文件回归测试
 python tests/test_config.py
+
+# 运行 prune 历史清理回归测试
+python tests/test_prune.py
 ```
 
 ---

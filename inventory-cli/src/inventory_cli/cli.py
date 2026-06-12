@@ -962,7 +962,7 @@ def prune(
                 else:
                     typer.secho("  (none)")
 
-            if referenced_conflicts:
+            if prune_orphans and referenced_conflicts:
                 typer.secho(
                     f"\nNote: {len(referenced_conflicts)} batches are still referenced "
                     f"by retained snapshots and will NOT be deleted:",
@@ -983,7 +983,7 @@ def prune(
             db.close()
             raise typer.Exit(code=0)
 
-        if referenced_conflicts:
+        if prune_orphans and referenced_conflicts:
             typer.secho(
                 f"Warning: {len(referenced_conflicts)} batches are still referenced "
                 f"by retained snapshots and will NOT be deleted:",
