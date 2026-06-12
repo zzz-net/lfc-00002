@@ -138,7 +138,7 @@ SKU004,200
   {"sku": "SKU001", "quantity": 100},
   {"sku": "SKU002", "quantity": 60},
   {"sku": "SKU003", "quantity": 75},
-  {"sku": "SKU005", "300"}
+  {"sku": "SKU005", "quantity": 150}
 ]
 ```
 
