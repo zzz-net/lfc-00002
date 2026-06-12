@@ -1,0 +1,7 @@
+{
+    "description": "INVALID: This is bad JSON with a syntax error
+    "conflict_strategy": "sum",
+    "validation": {
+        "negative_quantities": true
+    }
+}

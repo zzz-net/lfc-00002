@@ -1,0 +1,7 @@
+{
+    "description": "INVALID: conflict_strategy is not one of the allowed values",
+    "conflict_strategy": "auto_magically_resolve",
+    "validation": {
+        "negative_quantities": true
+    }
+}

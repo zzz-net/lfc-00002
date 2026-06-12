@@ -1,0 +1,19 @@
+{
+    "$schema":  "https://example.com/inventory-config-schema.json",
+    "description":  "Offline Inventory CLI Configuration File",
+    "conflict_strategy":  "sum",
+    "validation":  {
+                       "negative_quantities":  true,
+                       "required_columns":  true,
+                       "duplicate_sku":  true
+                   },
+    "export":  {
+                   "include_diff_report":  true,
+                   "include_source_batches":  true
+               },
+    "_comments":  {
+                      "conflict_strategy":  "One of: first, last, sum, average, require_manual",
+                      "validation":  "Toggle import validation rules (true=enable, false=disable)",
+                      "require_manual_note":  "require_manual will FAIL merge if any cross-store SKU quantity conflicts exist"
+                  }
+}

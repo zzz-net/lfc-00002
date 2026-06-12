@@ -1,0 +1,9 @@
+{
+    "description": "Test config: sum strategy - keep each store's quantity",
+    "conflict_strategy": "sum",
+    "validation": {
+        "negative_quantities": true,
+        "required_columns": true,
+        "duplicate_sku": true
+    }
+}

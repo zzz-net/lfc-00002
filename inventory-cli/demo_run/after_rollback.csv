@@ -1,0 +1,13 @@
+sku,quantity,store_id,batch_id,source_file
+SKU001,100,STORE001,batch_store_a,d:\workSpace\AI__SPACE\lfc-00002\inventory-cli\tests\store_a.csv
+SKU002,50,STORE001,batch_store_a,d:\workSpace\AI__SPACE\lfc-00002\inventory-cli\tests\store_a.csv
+SKU003,75,STORE001,batch_store_a,d:\workSpace\AI__SPACE\lfc-00002\inventory-cli\tests\store_a.csv
+SKU004,200,STORE001,batch_store_a,d:\workSpace\AI__SPACE\lfc-00002\inventory-cli\tests\store_a.csv
+SKU001,100,STORE002,batch_store_b,d:\workSpace\AI__SPACE\lfc-00002\inventory-cli\tests\store_b.json
+SKU002,60,STORE002,batch_store_b,d:\workSpace\AI__SPACE\lfc-00002\inventory-cli\tests\store_b.json
+SKU003,75,STORE002,batch_store_b,d:\workSpace\AI__SPACE\lfc-00002\inventory-cli\tests\store_b.json
+SKU005,150,STORE002,batch_store_b,d:\workSpace\AI__SPACE\lfc-00002\inventory-cli\tests\store_b.json
+
+# Export Metadata
+# Source Batches:,"batch_store_a, batch_store_b"
+# Merge Strategy:,sum

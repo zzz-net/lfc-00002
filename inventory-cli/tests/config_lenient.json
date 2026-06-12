@@ -1,0 +1,9 @@
+{
+    "description": "Test config: lenient validation, average strategy",
+    "conflict_strategy": "average",
+    "validation": {
+        "negative_quantities": false,
+        "required_columns": true,
+        "duplicate_sku": false
+    }
+}

@@ -1,0 +1,249 @@
+{
+  "metadata": {
+    "generated_at": "2026-06-12T13:06:39.003988",
+    "record_count": 8,
+    "unique_skus": 5,
+    "unique_stores": 2,
+    "unique_batches": 2,
+    "source_batches": [
+      "batch_store_a",
+      "batch_store_b"
+    ],
+    "merge_strategy": "sum"
+  },
+  "inventory": [
+    {
+      "sku": "SKU001",
+      "quantity": 100,
+      "store_id": "STORE001",
+      "batch_id": "batch_store_a",
+      "source_file": "d:\\workSpace\\AI__SPACE\\lfc-00002\\inventory-cli\\tests\\store_a.csv"
+    },
+    {
+      "sku": "SKU002",
+      "quantity": 50,
+      "store_id": "STORE001",
+      "batch_id": "batch_store_a",
+      "source_file": "d:\\workSpace\\AI__SPACE\\lfc-00002\\inventory-cli\\tests\\store_a.csv"
+    },
+    {
+      "sku": "SKU003",
+      "quantity": 75,
+      "store_id": "STORE001",
+      "batch_id": "batch_store_a",
+      "source_file": "d:\\workSpace\\AI__SPACE\\lfc-00002\\inventory-cli\\tests\\store_a.csv"
+    },
+    {
+      "sku": "SKU004",
+      "quantity": 200,
+      "store_id": "STORE001",
+      "batch_id": "batch_store_a",
+      "source_file": "d:\\workSpace\\AI__SPACE\\lfc-00002\\inventory-cli\\tests\\store_a.csv"
+    },
+    {
+      "sku": "SKU001",
+      "quantity": 100,
+      "store_id": "STORE002",
+      "batch_id": "batch_store_b",
+      "source_file": "d:\\workSpace\\AI__SPACE\\lfc-00002\\inventory-cli\\tests\\store_b.json"
+    },
+    {
+      "sku": "SKU002",
+      "quantity": 60,
+      "store_id": "STORE002",
+      "batch_id": "batch_store_b",
+      "source_file": "d:\\workSpace\\AI__SPACE\\lfc-00002\\inventory-cli\\tests\\store_b.json"
+    },
+    {
+      "sku": "SKU003",
+      "quantity": 75,
+      "store_id": "STORE002",
+      "batch_id": "batch_store_b",
+      "source_file": "d:\\workSpace\\AI__SPACE\\lfc-00002\\inventory-cli\\tests\\store_b.json"
+    },
+    {
+      "sku": "SKU005",
+      "quantity": 150,
+      "store_id": "STORE002",
+      "batch_id": "batch_store_b",
+      "source_file": "d:\\workSpace\\AI__SPACE\\lfc-00002\\inventory-cli\\tests\\store_b.json"
+    }
+  ],
+  "by_store_summary": {
+    "STORE001": {
+      "sku_count": 4,
+      "total_quantity": 425,
+      "batches": [
+        "batch_store_a"
+      ]
+    },
+    "STORE002": {
+      "sku_count": 4,
+      "total_quantity": 385,
+      "batches": [
+        "batch_store_b"
+      ]
+    }
+  },
+  "by_batch_summary": {
+    "batch_store_a": {
+      "sku_count": 4,
+      "total_quantity": 425,
+      "stores": [
+        "STORE001"
+      ]
+    },
+    "batch_store_b": {
+      "sku_count": 4,
+      "total_quantity": 385,
+      "stores": [
+        "STORE002"
+      ]
+    }
+  },
+  "diff_report": {
+    "summary": {
+      "total_records": 8,
+      "unique_skus": 5,
+      "unique_stores": 2,
+      "unique_batches": 2,
+      "same_batch_conflicts": 0,
+      "cross_store_conflicts": 1,
+      "total_conflicts": 1
+    },
+    "by_sku": {
+      "SKU001": [
+        {
+          "store_id": "STORE001",
+          "quantity": 100,
+          "batch_id": "batch_store_a",
+          "source_file": "d:\\workSpace\\AI__SPACE\\lfc-00002\\inventory-cli\\tests\\store_a.csv"
+        },
+        {
+          "store_id": "STORE002",
+          "quantity": 100,
+          "batch_id": "batch_store_b",
+          "source_file": "d:\\workSpace\\AI__SPACE\\lfc-00002\\inventory-cli\\tests\\store_b.json"
+        }
+      ],
+      "SKU002": [
+        {
+          "store_id": "STORE001",
+          "quantity": 50,
+          "batch_id": "batch_store_a",
+          "source_file": "d:\\workSpace\\AI__SPACE\\lfc-00002\\inventory-cli\\tests\\store_a.csv"
+        },
+        {
+          "store_id": "STORE002",
+          "quantity": 60,
+          "batch_id": "batch_store_b",
+          "source_file": "d:\\workSpace\\AI__SPACE\\lfc-00002\\inventory-cli\\tests\\store_b.json"
+        }
+      ],
+      "SKU003": [
+        {
+          "store_id": "STORE001",
+          "quantity": 75,
+          "batch_id": "batch_store_a",
+          "source_file": "d:\\workSpace\\AI__SPACE\\lfc-00002\\inventory-cli\\tests\\store_a.csv"
+        },
+        {
+          "store_id": "STORE002",
+          "quantity": 75,
+          "batch_id": "batch_store_b",
+          "source_file": "d:\\workSpace\\AI__SPACE\\lfc-00002\\inventory-cli\\tests\\store_b.json"
+        }
+      ],
+      "SKU004": [
+        {
+          "store_id": "STORE001",
+          "quantity": 200,
+          "batch_id": "batch_store_a",
+          "source_file": "d:\\workSpace\\AI__SPACE\\lfc-00002\\inventory-cli\\tests\\store_a.csv"
+        }
+      ],
+      "SKU005": [
+        {
+          "store_id": "STORE002",
+          "quantity": 150,
+          "batch_id": "batch_store_b",
+          "source_file": "d:\\workSpace\\AI__SPACE\\lfc-00002\\inventory-cli\\tests\\store_b.json"
+        }
+      ]
+    },
+    "by_store": {
+      "STORE001": [
+        {
+          "sku": "SKU001",
+          "quantity": 100,
+          "batch_id": "batch_store_a"
+        },
+        {
+          "sku": "SKU002",
+          "quantity": 50,
+          "batch_id": "batch_store_a"
+        },
+        {
+          "sku": "SKU003",
+          "quantity": 75,
+          "batch_id": "batch_store_a"
+        },
+        {
+          "sku": "SKU004",
+          "quantity": 200,
+          "batch_id": "batch_store_a"
+        }
+      ],
+      "STORE002": [
+        {
+          "sku": "SKU001",
+          "quantity": 100,
+          "batch_id": "batch_store_b"
+        },
+        {
+          "sku": "SKU002",
+          "quantity": 60,
+          "batch_id": "batch_store_b"
+        },
+        {
+          "sku": "SKU003",
+          "quantity": 75,
+          "batch_id": "batch_store_b"
+        },
+        {
+          "sku": "SKU005",
+          "quantity": 150,
+          "batch_id": "batch_store_b"
+        }
+      ]
+    },
+    "source_batches": [
+      "batch_store_a",
+      "batch_store_b"
+    ],
+    "conflicts": [
+      {
+        "sku": "SKU002",
+        "store_id_1": "STORE001",
+        "quantity_1": 50,
+        "store_id_2": "STORE002",
+        "quantity_2": 60,
+        "batch_id_1": "batch_store_a",
+        "batch_id_2": "batch_store_b"
+      }
+    ],
+    "conflict_count": 1,
+    "same_batch_conflicts": [],
+    "cross_store_conflicts": [
+      {
+        "sku": "SKU002",
+        "store_id_1": "STORE001",
+        "quantity_1": 50,
+        "store_id_2": "STORE002",
+        "quantity_2": 60,
+        "batch_id_1": "batch_store_a",
+        "batch_id_2": "batch_store_b"
+      }
+    ]
+  }
+}

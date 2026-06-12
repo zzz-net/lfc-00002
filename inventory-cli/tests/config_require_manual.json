@@ -1,0 +1,9 @@
+{
+    "description": "Test config: require_manual strategy (default strict mode)",
+    "conflict_strategy": "require_manual",
+    "validation": {
+        "negative_quantities": true,
+        "required_columns": true,
+        "duplicate_sku": true
+    }
+}

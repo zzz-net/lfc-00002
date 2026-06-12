@@ -7,6 +7,7 @@ from .config import ConfigManager
 from .importer import InventoryImporter, ImportError
 from .merger import InventoryMerger, MergeError
 from .exporter import InventoryExporter, ExportError
+from .config import ConfigError
 
 app = typer.Typer(
     help="""
@@ -36,11 +37,19 @@ def get_db(db_path: str = DEFAULT_DB_PATH) -> Database:
     return db
 
 
-@app.command("init", help="Initialize a new inventory repository (creates SQLite database)")
+@app.command("init", help="Initialize a new inventory repository (creates SQLite database + example config)")
 def init(
     db_path: str = typer.Option(
         DEFAULT_DB_PATH, "--database",
         help="Path to SQLite database file (created if not exists)"
+    ),
+    config_file: Optional[str] = typer.Option(
+        ConfigManager.DEFAULT_CONFIG_FILE, "--config", "-c",
+        help="Path to generate example config file (set to empty string to skip)"
+    ),
+    force_config: bool = typer.Option(
+        False, "--force", "-f",
+        help="Overwrite existing config file if it exists"
     )
 ):
     """
@@ -52,9 +61,14 @@ def init(
     - Validate required columns (sku, quantity): enabled
     - Validate duplicate SKUs within batch: enabled
     
+    Also generates an example 'inventory.config.json' file in current directory
+    (use --config to specify a different path, or --config '' to skip).
+    
     Examples:
         inventory init
-        inventory init --db ./data/my_inventory.db
+        inventory init --database ./data/my_inventory.db
+        inventory init --config ./configs/prod.json --force
+        inventory init --config ''  # Skip config file generation
     """
     db = get_db(db_path)
     db.init_schema()
@@ -71,6 +85,30 @@ def init(
     typer.secho("  - Validate negative quantities: true")
     typer.secho("  - Validate required columns: true")
     typer.secho("  - Validate duplicate SKUs: true")
+    
+    if config_file:
+        import os
+        if os.path.exists(config_file) and not force_config:
+            typer.secho(
+                f"\nConfig file '{config_file}' already exists. Use --force to overwrite.",
+                fg=typer.colors.YELLOW
+            )
+        else:
+            try:
+                ConfigManager.generate_example_config(config_file)
+                typer.secho(
+                    f"\nExample config generated at: {config_file}",
+                    fg=typer.colors.GREEN
+                )
+                typer.secho(
+                    "Edit the 'conflict_strategy' field to change default merge behavior.",
+                    fg=typer.colors.CYAN
+                )
+            except Exception as e:
+                typer.secho(
+                    f"\nWarning: Could not generate config file: {str(e)}",
+                    fg=typer.colors.YELLOW
+                )
 
 
 @app.command("import", help="Import inventory data from a CSV or JSON file into a new batch")
@@ -87,6 +125,10 @@ def import_inventory(
         None, "--batch", "-b",
         help="Custom batch identifier. If not provided, auto-generated as batch_YYYYMMDD_HHMMSS"
     ),
+    config_file: Optional[str] = typer.Option(
+        None, "--config", "-c",
+        help="Path to JSON config file for validation rules. Default: ./inventory.config.json"
+    ),
     db_path: str = typer.Option(
         DEFAULT_DB_PATH, "--database",
         help="Path to SQLite database file"
@@ -99,24 +141,34 @@ def import_inventory(
       - CSV: Header row must contain 'sku' and 'quantity' columns
       - JSON: Array of objects with 'sku' and 'quantity' fields
     
-    Validation (can be configured via 'config' command):
-      - Missing sku/quantity columns -> FAIL
-      - Negative quantity values -> FAIL
-      - Unknown file format -> FAIL  
-      - Duplicate SKU in same batch with different quantities -> FAIL
+    Validation rules (from config file or SQLite config):
+      - validation.required_columns: Missing sku/quantity columns -> FAIL
+      - validation.negative_quantities: Negative quantity values -> FAIL
+      - validation.duplicate_sku: Duplicate SKU in same batch (inconsistent qty) -> FAIL
+      - Unknown file format -> Always FAIL
     
     All validations are atomic: on failure, NO records are inserted into the database.
+    Configuration file takes priority over SQLite-persisted config.
     
     Examples:
         inventory import ./store_a.csv STORE001 --batch batch_2025_store_a
         inventory import ./data/store_b.json STORE002
-        inventory import ./counts.xlsx STORE003 --db ./data/inv.db
+        inventory import ./counts.csv STORE003 --config ./lenient.config.json
     """
     if batch_id is None:
         batch_id = f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
     db = get_db(db_path)
     config = ConfigManager(db)
+    
+    try:
+        loaded_config = config.load_config_file(config_file)
+    except ConfigError as e:
+        typer.secho(f"Configuration error: {str(e)}", fg=typer.colors.RED)
+        typer.secho("No changes made to database.", fg=typer.colors.YELLOW)
+        db.close()
+        raise typer.Exit(code=1)
+    
     importer = InventoryImporter(config)
     
     try:
@@ -158,6 +210,10 @@ def merge(
         help=f"Conflict resolution strategy for cross-store SKU mismatches: "
              f"{', '.join(ConfigManager.CONFLICT_STRATEGIES)}"
     ),
+    config_file: Optional[str] = typer.Option(
+        None, "--config", "-c",
+        help="Path to JSON config file. If not specified, looks for 'inventory.config.json' in current directory."
+    ),
     db_path: str = typer.Option(
         DEFAULT_DB_PATH, "--database",
         help="Path to SQLite database file"
@@ -165,6 +221,13 @@ def merge(
 ):
     """
     Merge inventory from multiple batches and create a snapshot.
+    
+    Configuration Priority (highest to lowest):
+      1. --strategy flag (explicit command line)
+      2. --config specified JSON file
+      3. ./inventory.config.json (if exists in current directory)
+      4. SQLite persisted config (via 'config' command)
+      5. Built-in default (require_manual)
     
     Conflict Strategies (how to resolve same SKU with different quantities across stores):
       - first           : Use quantity from the earliest-imported store
@@ -174,22 +237,40 @@ def merge(
       - require_manual  : [DEFAULT] Do NOT merge if any conflicts exist. Fail explicitly.
     
     Note: Same-batch SKU quantity conflicts ALWAYS fail regardless of strategy.
+          Bad/invalid config file will FAIL before modifying any snapshots.
     
     Creates a snapshot that can be rolled back to later via 'rollback'.
     
     Examples:
         inventory merge batch_store_a batch_store_b --strategy sum
-        inventory merge                                    # Merge all batches, use default strategy
-        inventory merge --strategy last                    # Merge all, use latest store's quantities
+        inventory merge                                    # Merge all, use config from file or SQLite
+        inventory merge --config ./prod.config.json        # Merge using specified config
+        inventory merge --strategy last --config ./cfg.json  # --strategy takes priority over file
         inventory merge -s require_manual batch_001 batch_002
     """
     db = get_db(db_path)
     config = ConfigManager(db)
     
+    try:
+        loaded_config = config.load_config_file(config_file)
+        if loaded_config and config_file:
+            typer.secho(f"Loaded config from: {config_file}", fg=typer.colors.CYAN)
+        elif loaded_config:
+            typer.secho(
+                f"Loaded config from default: {ConfigManager.DEFAULT_CONFIG_FILE}",
+                fg=typer.colors.CYAN
+            )
+    except ConfigError as e:
+        typer.secho(f"Configuration error: {str(e)}", fg=typer.colors.RED)
+        typer.secho("\nNo changes made to database or snapshots.", fg=typer.colors.YELLOW)
+        typer.secho("Use 'inventory init' to generate a valid config example.", fg=typer.colors.CYAN)
+        db.close()
+        raise typer.Exit(code=1)
+    
     if conflict_strategy:
+        config.set_cli_override('conflict_strategy', conflict_strategy)
         try:
-            config.set_conflict_strategy(conflict_strategy)
-            typer.secho(f"Using conflict strategy: {conflict_strategy}", fg=typer.colors.BLUE)
+            _ = config.get_conflict_strategy()
         except ValueError as e:
             typer.secho(f"Invalid strategy: {str(e)}", fg=typer.colors.RED)
             typer.secho(f"Valid strategies: {', '.join(ConfigManager.CONFLICT_STRATEGIES)}", fg=typer.colors.YELLOW)
@@ -197,7 +278,22 @@ def merge(
             raise typer.Exit(code=1)
     
     strategy = config.get_conflict_strategy()
-    typer.secho(f"Conflict strategy: {strategy}", fg=typer.colors.BLUE)
+    
+    config_summary = config.get_effective_config_summary()
+    typer.secho(f"\nEffective configuration:", fg=typer.colors.BLUE, bold=True)
+    for key, info in config_summary.items():
+        source_colors = {
+            'cli_parameter': typer.colors.GREEN,
+            'config_file': typer.colors.CYAN,
+            'sqlite_db': typer.colors.MAGENTA,
+            'default': typer.colors.YELLOW
+        }
+        color = source_colors.get(info['source'], typer.colors.WHITE)
+        typer.secho(
+            f"  {key:<30} = {str(info['value']):<15}  [{info['source']}]",
+            fg=color
+        )
+    typer.secho(f"\nConflict strategy: {strategy}", fg=typer.colors.BLUE, bold=True)
     
     if batches is None:
         batches = db.get_unique_batches()
