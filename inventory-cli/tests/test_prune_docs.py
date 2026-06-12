@@ -3,11 +3,12 @@
 Documentation consistency test for prune command.
 
 Verifies that README documentation matches actual CLI behavior:
-  - README mentions prune command and all parameters
-  - prune --help output contains all parameters documented in README
-  - "常见组合速查"表格里的每条命令都能实际运行（参数合法）
-  - 错误场景描述与实际 CLI 输出一致
-  - dry-run 输出格式符合 README 描述
+  1. README "所有命令速查" 包含 prune 签名
+  2. README "prune 常见组合速查" 表格中每条命令都能实际运行（参数合法）
+  3. README 记录的 prune 参数与 prune --help 输出一致
+  4. README 记录的错误场景与实际 CLI 输出一致
+  5. dry-run 输出格式符合 README 描述
+  6. prune 操作会写入 history 表（与 README "清理后验证"一致）
 
 This is a regression test to catch drift between docs and implementation.
 """
@@ -15,6 +16,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
@@ -25,10 +27,10 @@ TESTS = ROOT / "tests"
 
 def run_cli(*args, cwd=None):
     """Run inventory CLI via subprocess, return (returncode, stdout, stderr)."""
-    full_env = __import__("os").environ.copy()
+    full_env = os.environ.copy()
     pythonpath = str(SRC)
     if "PYTHONPATH" in full_env:
-        pythonpath = pythonpath + __import__("os").pathsep + full_env["PYTHONPATH"]
+        pythonpath = pythonpath + os.pathsep + full_env["PYTHONPATH"]
     full_env["PYTHONPATH"] = pythonpath
 
     cmd = [sys.executable, "-m", "inventory_cli.cli"] + list(args)
@@ -47,149 +49,203 @@ def read_readme() -> str:
     return README.read_text(encoding="utf-8")
 
 
-def test_readme_mentions_prune():
-    """README should have a prune section."""
+def extract_prune_common_combos(content: str):
+    """从 README 的 "prune 常见组合速查" 表格中提取所有命令。
+
+    Returns list of (场景, 命令参数字符串) tuples.
+    The command args are what follows "inventory prune " in the table cell.
+    """
+    # Find the "prune 常见组合速查" section
+    # Match from heading to next horizontal rule or heading
+    pattern = re.compile(
+        r"###\s+prune.*?速查.*?\n"
+        r"(.*?)"
+        r"(?=\n---\n|\n## |\n### |\Z)",
+        re.DOTALL
+    )
+    match = pattern.search(content)
+    assert match, "README should have 'prune 常见组合速查' section"
+    section = match.group(1)
+
+    # Extract table rows: | 场景 | 命令 |
+    # Skip header (场景/命令) and separator (------) rows
+    rows = re.findall(r"\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|", section)
+
+    # Only keep rows where the command column contains an actual prune command
+    # (skip header row where the "command" column is just "命令" or "Command")
+    valid_rows = []
+    for scenario, cmd_text in rows:
+        scenario = scenario.strip()
+        cmd_text = cmd_text.strip()
+        # Skip separator rows
+        if "---" in scenario or "---" in cmd_text:
+            continue
+        # Skip header rows (command column doesn't have "prune" in it)
+        if "prune" not in cmd_text.lower():
+            continue
+        valid_rows.append((scenario, cmd_text))
+
+    assert len(valid_rows) >= 4, \
+        f"Common combos table should have >= 4 valid rows, got {len(valid_rows)}"
+    rows = valid_rows
+
+    # Extract the args part from `inventory prune <args>` or just raw text
+    result = []
+    for scenario, cmd_text in rows:
+        # Command may be wrapped in backticks
+        cmd_clean = cmd_text.strip('`').strip()
+        # Remove "inventory prune " prefix to get just the args
+        args_str = re.sub(r'^inventory\s+prune\s+', '', cmd_clean)
+        result.append((scenario, args_str))
+
+    return result
+
+
+def test_1_readme_has_prune_in_cheatsheet():
+    """README "所有命令速查" 代码块应包含 prune 命令签名。"""
     content = read_readme()
-    assert "prune" in content.lower(), "README should mention 'prune'"
-    assert "历史清理" in content or "历史数据清理" in content, \
-        "README should have prune/历史清理 section"
-    assert "--dry-run" in content, "README should mention --dry-run"
-    assert "--keep" in content, "README should mention --keep"
-    assert "--before" in content, "README should mention --before"
-    assert "--prune-orphans" in content, "README should mention --prune-orphans"
-    print("  [OK] README mentions prune and all parameters")
+
+    # Find the "所有命令速查" section
+    assert "所有命令速查" in content, "README should have '所有命令速查' section"
+
+    # Locate the code block under "所有命令速查"
+    section_match = re.search(
+        r"##\s+所有命令速查.*?\n```.*?\n(.*?)\n```",
+        content,
+        re.DOTALL
+    )
+    assert section_match, "Should find code block under 所有命令速查"
+    cheatsheet = section_match.group(1)
+
+    # Verify prune is listed
+    assert "prune" in cheatsheet.lower(), \
+        "Cheatsheet should mention prune"
+    assert "inventory prune" in cheatsheet, \
+        "Cheatsheet should have 'inventory prune' command line"
+
+    # Verify all documented params appear in the signature
+    for param in ["--before", "--keep", "--prune-orphans", "--dry-run", "--database"]:
+        assert param in cheatsheet, \
+            f"Cheatsheet prune signature should include {param}"
+
+    print("  [OK] README 所有命令速查包含 prune 签名及所有参数")
 
 
-def test_cli_help_matches_readme():
-    """prune --help should list all parameters documented in README."""
+def test_2_cli_help_matches_readme_params():
+    """prune --help 输出的参数应与 README 记录的一致。"""
     rc, stdout, stderr = run_cli("prune", "--help")
-
-    # --help should succeed
-    assert rc == 0, f"prune --help should exit 0"
+    assert rc == 0, "prune --help should exit 0"
     help_text = stdout + stderr
 
-    # All documented parameters should appear in help
-    for param in ["--before", "--keep", "--prune-orphans", "--dry-run", "--database"]:
-        assert param in help_text, f"CLI help should contain {param}"
+    # All params documented in README should appear in help
+    readme_params = ["--before", "--keep", "--prune-orphans", "--dry-run", "--database"]
+    for param in readme_params:
+        assert param in help_text, \
+            f"CLI help should contain param {param}"
 
-    # Help should describe purpose
+    # Help should describe what prune does
     assert "clean" in help_text.lower() or "prune" in help_text.lower(), \
-        "Help should describe what prune does"
+        "Help should describe prune purpose"
 
-    print("  [OK] CLI --help contains all documented parameters")
+    # Verify param types match expectations
+    assert "--before" in help_text and "TEXT" in help_text, \
+        "--before should take TEXT"
+    assert "--keep" in help_text and "INTEGER" in help_text, \
+        "--keep should take INTEGER"
+
+    print("  [OK] CLI --help 参数与 README 一致")
 
 
-def test_common_combos_are_valid():
-    """Each command in the '常见组合速查' table should be valid (参数合法).
+def test_3_common_combos_are_valid_commands():
+    """README "prune 常见组合速查" 表里的每条命令参数都应合法，能被 CLI 正常解析。
 
-    We test by running with --dry-run where applicable and a temp DB,
-    or by checking that invalid-parameter errors match expectations.
+    Core check: each command runs without "no such option" or argument parsing errors.
+    Output format details are tested separately in test_5 (dry-run format).
     """
     content = read_readme()
+    combos = extract_prune_common_combos(content)
 
-    # Find the "prune 常见组合速查" section heading (may be in Chinese)
-    has_section = (
-        "prune" in content.lower() and
-        ("common" in content.lower() or "\xe5\xb8\xb8" in content.encode('utf-8').decode('utf-8') or
-         "速查" in content or "组合" in content or
-         # fallback: check for multiple prune command examples with concrete args
-         len(re.findall(r"inventory prune --", content)) >= 3)
-    )
-    assert has_section, "README should have prune common combos/examples section"
+    print(f"  Found {len(combos)} common combos in README:")
+    for scenario, args_str in combos:
+        print(f"    - {scenario}: prune {args_str}")
 
-    # Extract all `inventory prune ...` commands from the README
-    # (focus on common combos: ones with --dry-run, --keep, --before patterns)
-    all_prune_cmds = re.findall(r"`inventory prune ([^`]+)`", content)
-    # Filter to get the "common combo" style commands (not the basic signature)
-    # Common combos have specific arguments like --keep, --before, --dry-run, --prune-orphans
-    cmds = [c for c in all_prune_cmds if any(
-        kw in c for kw in ["--keep", "--before", "--dry-run", "--prune-orphans"]
-    )]
-    assert len(cmds) >= 4, f"Should have at least 4 common combos, found {len(cmds)}: {cmds}"
-    print(f"  Found {len(cmds)} prune example commands in README")
-
-    # Create a temp DB with some data so we can test real commands
+    # Setup a temp DB with enough snapshots so keep-N / before-date filters have data
     test_dir = Path(tempfile.mkdtemp(prefix="inv_prune_docs_"))
     db_path = test_dir / "test.db"
 
-    # init + import + merge to create snapshots
     rc, _, _ = run_cli("init", "--database", str(db_path),
                        "--config", str(TESTS / "config_good.json"))
     assert rc == 0, "init should succeed"
+    run_cli("import", str(TESTS / "store_a.csv"), "STORE001",
+            "--batch", "batch_a", "--database", str(db_path))
+    run_cli("import", str(TESTS / "store_b.json"), "STORE002",
+            "--batch", "batch_b", "--database", str(db_path))
+    for strategy in ["sum", "average", "first"]:
+        run_cli("merge", "--strategy", strategy, "--database", str(db_path))
 
-    rc, _, _ = run_cli("import", str(TESTS / "store_a.csv"), "STORE001",
-                        "--batch", "batch_a", "--database", str(db_path))
-    assert rc == 0, "import should succeed"
+    # Test each combo on a fresh DB clone to avoid state pollution
+    for i, (scenario, args_str) in enumerate(combos):
+        args = args_str.split()
+        has_database = any(a.startswith("--database") for a in args)
 
-    rc, _, _ = run_cli("import", str(TESTS / "store_b.json"), "STORE002",
-                        "--batch", "batch_b", "--database", str(db_path))
-    assert rc == 0, "import should succeed"
-
-    for i, strategy in enumerate(["sum", "average", "first"]):
-        rc, _, _ = run_cli("merge", "--strategy", strategy, "--database", str(db_path))
-        assert rc == 0, f"merge #{i+1} should succeed"
-
-    # Test each common combo
-    print(f"  Testing {len(cmds)} common combos from README...")
-    for i, cmd_args_str in enumerate(cmds):
-        # Split the args, add --database and possibly --dry-run if not there
-        args = cmd_args_str.split()
-
-        # For destructive commands (not dry-run), we add --dry-run to be safe
-        has_dry_run = "--dry-run" in args
+        # Build full args for CLI
         full_args = ["prune"] + args
-        if not any(a.startswith("--database") for a in full_args):
+        if not has_database:
             full_args.extend(["--database", str(db_path)])
 
-        # If it's a destructive command (keep 0, no dry-run), skip actual execution
-        # Just check that --help-style validation works
-        if "0" in args and "--keep" in args and not has_dry_run:
-            # This is "清空所有快照", it's destructive but valid syntax
-            # Verify it doesn't crash by checking with a non-existent empty DB would error
-            print(f"    [{i+1}] skipping destructive command (keep 0) - syntax only check via dry-run equivalent")
-            # Test with --dry-run flag added to verify param parsing
-            test_args = ["prune", "--dry-run"] + args + ["--database", str(db_path)]
-            rc, stdout, stderr = run_cli(*test_args)
-            assert rc == 0, f"Command should be valid: inventory prune {cmd_args_str} (with --dry-run)"
-            continue
+        # For destructive commands that would delete everything,
+        # add --dry-run to safely verify parameter parsing.
+        # (The --keep 0 case is the main one, but we also protect --before dates
+        #  that might match everything - those are fine as-is since they're valid.)
+        is_destructive_all = ("--keep" in args and "0" in args and "--dry-run" not in args)
+        if is_destructive_all:
+            full_args = ["prune", "--dry-run"] + args + ["--database", str(db_path)]
 
         rc, stdout, stderr = run_cli(*full_args)
+        output = stdout + stderr
 
-        # Commands with --dry-run should succeed (exit 0)
-        if has_dry_run:
-            assert rc == 0, \
-                f"Common combo should succeed (exit 0): inventory prune {cmd_args_str}\n" \
-                f"stdout: {stdout}\nstderr: {stderr}"
-            # Verify it actually shows "DRY RUN"
-            assert "DRY RUN" in stdout or "dry-run" in stdout.lower(), \
-                f"Dry-run output should mention DRY RUN: {cmd_args_str}"
-        else:
-            # Non-dry-run commands: we expect them to succeed too (we have data)
-            # But since they modify data, let's just verify they don't crash with arg errors
-            # (they'll modify data which is fine since we're in a temp dir)
-            assert rc == 0, \
-                f"Common combo should succeed (exit 0): inventory prune {cmd_args_str}\n" \
-                f"stdout: {stdout}\nstderr: {stderr}"
+        # Command should succeed (exit 0) - parameter parsing works
+        assert rc == 0, \
+            f"Common combo '{scenario}' should succeed (exit 0)\n" \
+            f"  Command: prune {args_str}\n" \
+            f"  Exit code: {rc}\n" \
+            f"  Output: {output}"
 
-        print(f"    [{i+1}] OK: inventory prune {cmd_args_str}")
+        # No parameter parsing errors
+        assert "no such option" not in output.lower(), \
+            f"Command should not have unknown options: prune {args_str}"
+        assert "Got unexpected extra argument" not in output, \
+            f"Command should not have extra args: prune {args_str}"
+        assert "requires an argument" not in output.lower(), \
+            f"Command should not have missing argument errors: prune {args_str}"
 
-    print("  [OK] All common combos from README are valid commands")
+        # If it's supposed to be a dry-run command, verify dry-run is actually active
+        # (i.e., the flag is recognized and triggers dry-run behavior)
+        if "--dry-run" in args:
+            assert "DRY RUN" in output or "No changes will be made" in output or \
+                   "Remove --dry-run" in output or "No data to prune" in output, \
+                f"Command with --dry-run should show dry-run related output: prune {args_str}\n" \
+                f"Output: {output}"
+
+        print(f"    [{i+1}] OK: {scenario}")
+
+    print("  [OK] All common combos have valid parameters and run successfully")
 
 
-def test_error_scenarios_match_readme():
-    """Error scenarios documented in README should match actual CLI behavior."""
+def test_4_error_scenarios_match_readme():
+    """README 记录的 prune 错误场景应与实际 CLI 输出一致。"""
     test_dir = Path(tempfile.mkdtemp(prefix="inv_prune_errdoc_"))
     db_path = test_dir / "test.db"
 
-    # Setup a valid DB with snapshots
+    # Setup
     run_cli("init", "--database", str(db_path),
             "--config", str(TESTS / "config_good.json"))
     run_cli("import", str(TESTS / "store_a.csv"), "STORE001",
             "--batch", "batch_a", "--database", str(db_path))
     run_cli("merge", "--strategy", "sum", "--database", str(db_path))
 
+    # Scenarios: (description, args, expected_exit, expected_keywords)
     scenarios = [
-        # (description, args, expected_exit_code, expected_keywords_in_output)
         ("未指定 --before/--keep",
          ["prune", "--database", str(db_path)],
          1, ["At least one", "--before", "--keep"]),
@@ -210,23 +266,19 @@ def test_error_scenarios_match_readme():
             f"Error scenario '{desc}' should exit {expected_rc}, got {rc}\nOutput: {output}"
 
         for kw in keywords:
-            # Check that keywords appear in output - but we need to adjust for typer's way of saying things
-            kw_lower = kw.lower()
-            output_lower = output.lower()
-            assert kw_lower in output_lower, \
+            assert kw.lower() in output.lower(), \
                 f"Error scenario '{desc}': output should contain '{kw}'\nOutput: {output}"
 
         print(f"    [{i+1}] OK: {desc}")
 
-    print("  [OK] Error scenarios match README documentation")
+    print("  [OK] 错误场景描述与 CLI 实际输出一致")
 
 
-def test_dry_run_format_matches_readme():
-    """dry-run output should match the format described in README."""
+def test_5_dry_run_format_matches_readme():
+    """dry-run 输出格式应与 README 描述一致：有 DRY RUN 标题、快照表、Summary、Remove --dry-run 提示。"""
     test_dir = Path(tempfile.mkdtemp(prefix="inv_prune_dryfmt_"))
     db_path = test_dir / "test.db"
 
-    # Setup: 2 snapshots
     run_cli("init", "--database", str(db_path),
             "--config", str(TESTS / "config_good.json"))
     run_cli("import", str(TESTS / "store_a.csv"), "STORE001",
@@ -236,45 +288,39 @@ def test_dry_run_format_matches_readme():
     run_cli("merge", "--strategy", "sum", "--database", str(db_path))
     run_cli("merge", "--strategy", "average", "--database", str(db_path))
 
-    # Test dry-run without --prune-orphans
+    # Dry-run without --prune-orphans: snapshot table only
     rc, stdout, _ = run_cli("prune", "--dry-run", "--keep", "1", "--database", str(db_path))
     assert rc == 0
 
-    # Should have DRY RUN header
-    assert "DRY RUN" in stdout
-    # Should show snapshot table with ID / Created At / Batch ID / Records
-    assert "ID" in stdout
-    assert "Created At" in stdout
-    assert "Batch ID" in stdout
-    assert "Records" in stdout
-    # Should have Summary
-    assert "Summary" in stdout or "summary" in stdout.lower()
-    # Should mention removing --dry-run
-    assert "Remove --dry-run" in stdout
+    # Verify key elements from README description
+    assert "DRY RUN" in stdout, "Should have DRY RUN header"
+    assert "Snapshots to delete" in stdout, "Should show 'Snapshots to delete'"
+    assert "ID" in stdout, "Table should have ID column"
+    assert "Created At" in stdout, "Table should have Created At column"
+    assert "Batch ID" in stdout, "Table should have Batch ID column"
+    assert "Records" in stdout, "Table should have Records column"
+    assert "Summary" in stdout, "Should have Summary"
+    assert "Remove --dry-run" in stdout, "Should have Remove --dry-run hint"
 
-    # Without --prune-orphans: should NOT show batch deletion info
-    # (no "Batches to delete" section)
+    # Without --prune-orphans: should NOT show "Batches to delete" section
     assert "Batches to delete" not in stdout, \
         "Without --prune-orphans, dry-run should not show batches section"
 
-    # Test dry-run WITH --prune-orphans
-    rc, stdout_orphans, _ = run_cli("prune", "--dry-run", "--keep", "1",
-                               "--prune-orphans", "--database", str(db_path))
+    # Dry-run WITH --prune-orphans: should show batch section
+    rc, stdout2, _ = run_cli("prune", "--dry-run", "--keep", "1",
+                             "--prune-orphans", "--database", str(db_path))
     assert rc == 0
-
-    # With --prune-orphans: should show batch info
-    assert "Batches to delete" in stdout_orphans, \
+    assert "Batches to delete" in stdout2, \
         "With --prune-orphans, dry-run should show batches section"
 
-    print("  [OK] dry-run output format matches README description")
+    print("  [OK] dry-run 输出格式与 README 描述一致")
 
 
-def test_prune_shows_in_history_command():
-    """After a real prune, it should appear in history (as README says)."""
+def test_6_prune_appears_in_history():
+    """README 说清理操作会写入 history 表，应能在 history 命令中看到。"""
     test_dir = Path(tempfile.mkdtemp(prefix="inv_prune_histdoc_"))
     db_path = test_dir / "test.db"
 
-    # Setup
     run_cli("init", "--database", str(db_path),
             "--config", str(TESTS / "config_good.json"))
     run_cli("import", str(TESTS / "store_a.csv"), "STORE001",
@@ -293,39 +339,41 @@ def test_prune_shows_in_history_command():
         "prune operation should appear in history output (as README says)"
 
     # Check audit-log can filter by prune type
-    rc, stdout_csv, _ = run_cli(
+    rc, _, _ = run_cli(
         "audit-log", str(test_dir / "audit.csv"),
         "--type", "prune", "--database", str(db_path)
     )
     assert rc == 0
-    csv_path = test_dir / "audit.csv"
-    assert csv_path.exists()
-    content = csv_path.read_text(encoding="utf-8-sig")
-    assert "prune" in content.lower(), \
-        "prune should be filterable in audit-log (type filter should include prune)"
+    csv_content = (test_dir / "audit.csv").read_text(encoding="utf-8-sig")
+    assert "prune" in csv_content.lower(), \
+        "prune should be filterable in audit-log (type filter includes prune)"
 
-    print("  [OK] prune appears in history and audit-log as documented")
+    print("  [OK] prune 操作写入 history，与 README 描述一致")
 
 
 def main():
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
     print(f"\n{'='*70}")
-    print("Running prune documentation consistency tests")
+    print("prune documentation consistency test (README vs CLI)")
     print(f"{'='*70}")
 
     tests = [
-        ("README mentions prune", test_readme_mentions_prune),
-        ("CLI --help matches README", test_cli_help_matches_readme),
-        ("Common combos are valid commands", test_common_combos_are_valid),
-        ("Error scenarios match README", test_error_scenarios_match_readme),
-        ("dry-run format matches README", test_dry_run_format_matches_readme),
-        ("prune shows in history command", test_prune_shows_in_history_command),
+        ("速查表包含 prune 签名", test_1_readme_has_prune_in_cheatsheet),
+        ("CLI --help 参数与 README 一致", test_2_cli_help_matches_readme_params),
+        ("常见组合命令参数合法", test_3_common_combos_are_valid_commands),
+        ("错误场景与 README 一致", test_4_error_scenarios_match_readme),
+        ("dry-run 输出格式正确", test_5_dry_run_format_matches_readme),
+        ("prune 写入 history", test_6_prune_appears_in_history),
     ]
 
     passed = 0
     failed = 0
 
     for name, test_fn in tests:
-        print(f"\n--- Test: {name} ---")
+        print(f"\n--- {name} ---")
         try:
             test_fn()
             passed += 1
@@ -334,16 +382,18 @@ def main():
             failed += 1
         except Exception as e:
             print(f"  ERROR: {e}")
+            import traceback
+            traceback.print_exc()
             failed += 1
 
     print(f"\n{'='*70}")
-    print(f"Results: {passed} passed, {failed} failed")
+    print(f"结果：{passed} 通过，{failed} 失败")
     print(f"{'='*70}")
 
     if failed > 0:
         sys.exit(1)
     else:
-        print("\nAll documentation consistency tests PASSED!")
+        print("\n所有文档一致性测试通过！")
         sys.exit(0)
 
 

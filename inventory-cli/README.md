@@ -354,6 +354,12 @@ python -m inventory_cli.cli export output/after_prune.csv
 | 配置文件 JSON 语法错误 | merge/import 失败，无数据变更 |
 | 配置文件 strategy 非法 | merge/import 失败，无数据变更 |
 | require_manual + 跨门店冲突 | merge 失败，不创建快照 |
+| prune 未指定 `--before`/`--keep` | 报错退出，提示需要至少一个条件 |
+| prune `--before` 时间格式非法 | 报错退出，提示 ISO 格式示例 |
+| prune `--keep` 为负数 | 报错退出，提示必须非负 |
+| prune 无匹配数据可清理 | 友好提示，退出码 0，零改动 |
+| prune 批次仍被保留快照引用 | 警告提示，该批次不删除（仅 `--prune-orphans` 时显示） |
+| prune 数据库不存在/只读 | 报错退出，给出明确原因 |
 
 ---
 
@@ -386,7 +392,23 @@ inventory audit-log OUTPUT [--from TIME] [--to TIME] [--type TYPES] [--database 
 
 # 批次
 inventory batches [--database PATH]
+
+# 历史清理（prune）
+inventory prune [--before TIME] [--keep N] [--prune-orphans] [--dry-run] [--database PATH]
 ```
+
+### prune 常见组合速查
+
+| 场景 | 命令 |
+|------|------|
+| 预览保留最近 3 个快照会删什么（推荐第一步） | `inventory prune --dry-run --keep 3` |
+| 实际执行：只保留最近 5 个快照 | `inventory prune --keep 5` |
+| 预览删除 2025-01-01 之前的快照 | `inventory prune --dry-run --before 2025-01-01` |
+| 实际执行：删除指定日期前快照 + 孤儿批次 | `inventory prune --before 2025-01-01 --prune-orphans` |
+| 组合条件（并集）预览 | `inventory prune --dry-run --keep 10 --before 2024-06-01` |
+| 清空所有快照（危险操作） | `inventory prune --keep 0` |
+
+> ⚠️ **建议流程：先 `--dry-run` 看清楚，确认无误再去掉 `--dry-run` 实际执行。**
 
 ---
 
