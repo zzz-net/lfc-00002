@@ -1,0 +1,2 @@
+This is not a CSV or JSON file
+SKU001 | 100
