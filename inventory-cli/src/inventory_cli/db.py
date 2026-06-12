@@ -2,8 +2,8 @@ import sqlite3
 import json
 import os
 from datetime import datetime
-from typing import Optional, List, Dict, Any
-from .models import InventoryRecord, HistoryEntry, Snapshot
+from typing import Optional, List, Dict, Any, Set, Tuple
+from .models import InventoryRecord, HistoryEntry, Snapshot, PruneResult
 
 
 class Database:
@@ -140,13 +140,15 @@ class Database:
         ) for row in rows]
 
     def insert_history(self, operation: str, batch_id: str, store_id: Optional[str] = None, 
-                       file_path: Optional[str] = None, details: Optional[str] = None):
+                       file_path: Optional[str] = None, details: Optional[str] = None,
+                       commit: bool = True):
         cursor = self.conn.cursor()
         cursor.execute('''
             INSERT INTO history (operation, batch_id, store_id, file_path, timestamp, details)
             VALUES (?, ?, ?, ?, ?, ?)
         ''', (operation, batch_id, store_id, file_path, datetime.now().isoformat(), details))
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def get_history(self, limit: int = 100) -> List[HistoryEntry]:
         cursor = self.conn.cursor()
@@ -266,3 +268,150 @@ class Database:
         cursor = self.conn.cursor()
         cursor.execute('DELETE FROM inventory')
         self.conn.commit()
+
+    def get_snapshots_before(self, before_time: datetime) -> List[Snapshot]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            'SELECT * FROM snapshots WHERE created_at <= ? ORDER BY id DESC',
+            (before_time.isoformat(),)
+        )
+        rows = cursor.fetchall()
+        return [Snapshot(
+            id=row['id'],
+            batch_id=row['batch_id'],
+            inventory_data=row['inventory_data'],
+            created_at=datetime.fromisoformat(row['created_at'])
+        ) for row in rows]
+
+    def get_snapshots_keep_recent(self, keep_count: int) -> List[Snapshot]:
+        all_snapshots = self.get_all_snapshots()
+        if keep_count >= len(all_snapshots):
+            return []
+        return all_snapshots[keep_count:]
+
+    def get_all_referenced_batches(self) -> Set[str]:
+        snapshots = self.get_all_snapshots()
+        referenced: Set[str] = set()
+        for snap in snapshots:
+            data = json.loads(snap.inventory_data)
+            source_batches = data.get('source_batches', [])
+            referenced.update(source_batches)
+        return referenced
+
+    def get_orphan_batches(self) -> List[str]:
+        all_batches = set(self.get_unique_batches())
+        referenced = self.get_all_referenced_batches()
+        return sorted(all_batches - referenced)
+
+    def get_batches_referenced_by_snapshots(self, snapshot_ids: List[int]) -> Set[str]:
+        if not snapshot_ids:
+            return set()
+        placeholders = ",".join("?" for _ in snapshot_ids)
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f'SELECT id, inventory_data FROM snapshots WHERE id IN ({placeholders})',
+            snapshot_ids
+        )
+        rows = cursor.fetchall()
+        referenced: Set[str] = set()
+        for row in rows:
+            data = json.loads(row['inventory_data'])
+            source_batches = data.get('source_batches', [])
+            referenced.update(source_batches)
+        return referenced
+
+    def delete_snapshot(self, snapshot_id: int, commit: bool = True):
+        cursor = self.conn.cursor()
+        cursor.execute('DELETE FROM snapshots WHERE id = ?', (snapshot_id,))
+        if commit:
+            self.conn.commit()
+
+    def delete_batch(self, batch_id: str, commit: bool = True):
+        cursor = self.conn.cursor()
+        cursor.execute('DELETE FROM inventory WHERE batch_id = ?', (batch_id,))
+        if commit:
+            self.conn.commit()
+
+    def plan_prune(
+        self,
+        before_time: Optional[datetime] = None,
+        keep_count: Optional[int] = None,
+        prune_orphans: bool = False
+    ) -> Tuple[List[Snapshot], List[str], List[str]]:
+        all_snapshots = self.get_all_snapshots()
+        if not all_snapshots:
+            return [], [], []
+
+        to_delete_by_time: Set[int] = set()
+        to_delete_by_keep: Set[int] = set()
+
+        if before_time is not None:
+            old_snaps = self.get_snapshots_before(before_time)
+            to_delete_by_time = {s.id for s in old_snaps}
+
+        if keep_count is not None:
+            if keep_count < 0:
+                raise ValueError("keep_count must be non-negative")
+            old_snaps = self.get_snapshots_keep_recent(keep_count)
+            to_delete_by_keep = {s.id for s in old_snaps}
+
+        if before_time is not None and keep_count is not None:
+            to_delete_ids = to_delete_by_time | to_delete_by_keep
+        elif before_time is not None:
+            to_delete_ids = to_delete_by_time
+        elif keep_count is not None:
+            to_delete_ids = to_delete_by_keep
+        else:
+            return [], [], []
+
+        snapshots_to_delete = [s for s in all_snapshots if s.id in to_delete_ids]
+        snapshot_ids_to_delete = [s.id for s in snapshots_to_delete]
+
+        remaining_snapshot_ids = [s.id for s in all_snapshots if s.id not in to_delete_ids]
+        still_referenced = self.get_batches_referenced_by_snapshots(remaining_snapshot_ids)
+        batches_in_deleted = self.get_batches_referenced_by_snapshots(snapshot_ids_to_delete)
+        batches_to_delete = sorted(batches_in_deleted - still_referenced) if prune_orphans else []
+
+        orphan_batches = self.get_orphan_batches() if prune_orphans else []
+
+        return snapshots_to_delete, batches_to_delete, orphan_batches
+
+    def execute_prune(
+        self,
+        snapshots_to_delete: List[Snapshot],
+        batches_to_delete: List[str],
+        orphan_batches: List[str]
+    ) -> PruneResult:
+        snapshots_deleted: List[int] = []
+        batches_deleted: List[str] = []
+        all_batches_to_delete = list(set(batches_to_delete + orphan_batches))
+
+        self.conn.execute('BEGIN IMMEDIATE')
+        try:
+            for snap in snapshots_to_delete:
+                self.delete_snapshot(snap.id, commit=False)
+                snapshots_deleted.append(snap.id)
+
+            for batch_id in all_batches_to_delete:
+                self.delete_batch(batch_id, commit=False)
+                batches_deleted.append(batch_id)
+
+            prune_details = (
+                f"Pruned {len(snapshots_deleted)} snapshots, "
+                f"{len(batches_deleted)} batches: "
+                f"snapshots={snapshots_deleted}, batches={batches_deleted}"
+            )
+            self.insert_history("prune", "PRUNE", details=prune_details, commit=False)
+
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+        return PruneResult(
+            snapshots_to_delete=snapshots_to_delete,
+            batches_to_delete=all_batches_to_delete,
+            orphan_batches=orphan_batches,
+            snapshots_deleted=snapshots_deleted,
+            batches_deleted=batches_deleted
+        )

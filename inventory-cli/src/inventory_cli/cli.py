@@ -2,6 +2,7 @@ import typer
 import json
 import csv
 import os
+import sqlite3
 from typing import Optional, List
 from datetime import datetime
 from .db import Database
@@ -11,7 +12,7 @@ from .merger import InventoryMerger, MergeError
 from .exporter import InventoryExporter, ExportError
 from .config import ConfigError
 
-VALID_OPERATION_TYPES = ["init", "import", "merge", "export", "rollback", "config"]
+VALID_OPERATION_TYPES = ["init", "import", "merge", "export", "rollback", "config", "prune"]
 
 app = typer.Typer(
     help="""
@@ -514,7 +515,9 @@ def history(
             'import': typer.colors.GREEN,
             'merge': typer.colors.MAGENTA,
             'export': typer.colors.BLUE,
-            'rollback': typer.colors.YELLOW
+            'rollback': typer.colors.YELLOW,
+            'config': typer.colors.BRIGHT_BLUE,
+            'prune': typer.colors.BRIGHT_RED
         }.get(entry.operation.lower(), typer.colors.WHITE)
         
         line_parts = [
@@ -784,6 +787,267 @@ def list_batches(
     db.close()
 
 
+@app.command("prune", help="Clean up old snapshots and orphaned batches by date or retention count")
+def prune(
+    before: Optional[str] = typer.Option(
+        None, "--before",
+        help="Delete snapshots older than this ISO time, e.g. '2025-01-01' or '2025-01-01T00:00:00'"
+    ),
+    keep: Optional[int] = typer.Option(
+        None, "--keep",
+        help="Keep only N most recent snapshots. Older ones will be deleted."
+    ),
+    prune_orphans: bool = typer.Option(
+        False, "--prune-orphans",
+        help="Also delete batches no longer referenced by any retained snapshot"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Preview what would be deleted without making any changes"
+    ),
+    db_path: str = typer.Option(
+        DEFAULT_DB_PATH, "--database",
+        help="Path to SQLite database file"
+    )
+):
+    """
+    Clean up old snapshots and optionally orphaned batch data.
+
+    Use --dry-run first to preview the changes. At least one of --before or --keep is required.
+    When both are specified, the union of matching snapshots is deleted.
+
+    Deleted snapshots will no longer appear in 'rollback' listing.
+    When --prune-orphans is specified, batch data (inventory records) that are no longer
+    referenced by any remaining snapshot will also be deleted.
+
+    All deletions are atomic - either everything succeeds or nothing is changed.
+    The prune operation is recorded in the history table.
+
+    Examples:
+        inventory prune --dry-run --keep 3                         # Preview keeping latest 3 snapshots
+        inventory prune --keep 3                                   # Keep only latest 3 snapshots
+        inventory prune --before 2025-01-01 --dry-run              # Preview deleting old snapshots
+        inventory prune --before 2025-01-01T00:00:00               # Delete snapshots before 2025
+        inventory prune --keep 5 --prune-orphans --dry-run         # Preview including orphan cleanup
+        inventory prune --keep 2 --prune-orphans                   # Keep 2, delete orphans
+    """
+    if before is None and keep is None:
+        typer.secho(
+            "Error: At least one of --before or --keep must be specified.",
+            fg=typer.colors.RED
+        )
+        typer.secho(
+            "Use --dry-run --keep <N> or --dry-run --before <TIME> to preview changes.",
+            fg=typer.colors.YELLOW
+        )
+        raise typer.Exit(code=1)
+
+    if keep is not None and keep < 0:
+        typer.secho(
+            f"Error: --keep value must be non-negative, got {keep}",
+            fg=typer.colors.RED
+        )
+        raise typer.Exit(code=1)
+
+    before_time: Optional[datetime] = None
+    if before:
+        try:
+            if 'T' not in before:
+                before_time = datetime.fromisoformat(before + "T23:59:59")
+            else:
+                before_time = datetime.fromisoformat(before)
+        except ValueError:
+            typer.secho(
+                f"Error: Invalid --before time format: '{before}'. "
+                f"Use ISO format like '2025-01-01' or '2025-01-01T10:00:00'.",
+                fg=typer.colors.RED
+            )
+            raise typer.Exit(code=1)
+
+    if not os.path.exists(db_path):
+        typer.secho(
+            f"Error: Database file not found: {db_path}",
+            fg=typer.colors.RED
+        )
+        typer.secho(
+            "Run 'inventory init' first to create the database.",
+            fg=typer.colors.CYAN
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        db = get_db(db_path)
+    except sqlite3.OperationalError as e:
+        if "read-only" in str(e).lower() or "permission" in str(e).lower():
+            typer.secho(
+                f"Error: Database is read-only or inaccessible: {e}",
+                fg=typer.colors.RED
+            )
+        else:
+            typer.secho(
+                f"Error opening database: {e}",
+                fg=typer.colors.RED
+            )
+        raise typer.Exit(code=1)
+
+    try:
+        all_snapshots = db.get_all_snapshots()
+        if not all_snapshots:
+            typer.secho(
+                "No snapshots found. Nothing to prune.",
+                fg=typer.colors.YELLOW
+            )
+            db.close()
+            raise typer.Exit(code=0)
+
+        try:
+            snapshots_to_delete, batches_to_delete, orphan_batches = db.plan_prune(
+                before_time=before_time,
+                keep_count=keep,
+                prune_orphans=prune_orphans
+            )
+        except ValueError as e:
+            typer.secho(f"Error: {str(e)}", fg=typer.colors.RED)
+            db.close()
+            raise typer.Exit(code=1)
+
+        if not snapshots_to_delete and not orphan_batches:
+            filter_desc = []
+            if before:
+                filter_desc.append(f"before {before}")
+            if keep is not None:
+                filter_desc.append(f"keep {keep}")
+            typer.secho(
+                f"No data to prune for filters: {', '.join(filter_desc)}",
+                fg=typer.colors.YELLOW
+            )
+            db.close()
+            raise typer.Exit(code=0)
+
+        all_snapshot_ids = {s.id for s in all_snapshots}
+        to_delete_ids = {s.id for s in snapshots_to_delete}
+        remaining_ids = all_snapshot_ids - to_delete_ids
+        still_referenced = db.get_batches_referenced_by_snapshots(list(remaining_ids))
+        batches_in_deleted = db.get_batches_referenced_by_snapshots(list(to_delete_ids))
+        referenced_conflicts = batches_in_deleted & still_referenced
+
+        if dry_run:
+            typer.secho("=== DRY RUN - No changes will be made ===", fg=typer.colors.CYAN, bold=True)
+            typer.secho(f"\nSnapshots to delete ({len(snapshots_to_delete)}):", fg=typer.colors.YELLOW, bold=True)
+            if snapshots_to_delete:
+                typer.secho("-" * 90)
+                typer.secho(
+                    f"{'ID':>4}  {'Created At':<20}  {'Batch ID':<28}  {'Records':>8}",
+                    fg=typer.colors.CYAN, bold=True
+                )
+                typer.secho("-" * 90)
+                for snap in snapshots_to_delete:
+                    data = json.loads(snap.inventory_data)
+                    record_count = len(data.get('records', []))
+                    timestamp = snap.created_at.strftime('%Y-%m-%d %H:%M:%S')
+                    batch_display = snap.batch_id[:26] + ('..' if len(snap.batch_id) > 26 else '')
+                    typer.secho(
+                        f"{snap.id:>4}  {timestamp:<20}  {batch_display:<28}  {record_count:>8}"
+                    )
+            else:
+                typer.secho("  (none)")
+
+            if prune_orphans:
+                all_orphans = list(set(batches_to_delete + orphan_batches))
+                typer.secho(f"\nBatches to delete ({len(all_orphans)}):", fg=typer.colors.YELLOW, bold=True)
+                if all_orphans:
+                    for b in sorted(all_orphans):
+                        status = "  (orphan)" if b in orphan_batches else ""
+                        typer.secho(f"  - {b}{status}")
+                else:
+                    typer.secho("  (none)")
+
+            if referenced_conflicts:
+                typer.secho(
+                    f"\nNote: {len(referenced_conflicts)} batches are still referenced "
+                    f"by retained snapshots and will NOT be deleted:",
+                    fg=typer.colors.MAGENTA
+                )
+                for b in sorted(referenced_conflicts):
+                    typer.secho(f"  - {b}")
+
+            typer.secho(
+                f"\nSummary: Would delete {len(snapshots_to_delete)} snapshots"
+                + (f" and {len(set(batches_to_delete + orphan_batches))} batches" if prune_orphans else ""),
+                fg=typer.colors.CYAN, bold=True
+            )
+            typer.secho(
+                "Remove --dry-run to execute the prune operation.",
+                fg=typer.colors.YELLOW
+            )
+            db.close()
+            raise typer.Exit(code=0)
+
+        if referenced_conflicts:
+            typer.secho(
+                f"Warning: {len(referenced_conflicts)} batches are still referenced "
+                f"by retained snapshots and will NOT be deleted:",
+                fg=typer.colors.MAGENTA
+            )
+            for b in sorted(referenced_conflicts):
+                typer.secho(f"  - {b}")
+            typer.secho(
+                "Only batches that are no longer referenced by any remaining snapshot will be deleted.\n",
+                fg=typer.colors.MAGENTA
+            )
+
+        try:
+            result = db.execute_prune(snapshots_to_delete, batches_to_delete, orphan_batches)
+        except sqlite3.OperationalError as e:
+            if "read-only" in str(e).lower() or "permission" in str(e).lower():
+                typer.secho(
+                    f"Error: Database is read-only, cannot write changes: {e}",
+                    fg=typer.colors.RED
+                )
+            else:
+                typer.secho(
+                    f"Error during prune (no changes made): {e}",
+                    fg=typer.colors.RED
+                )
+            db.close()
+            raise typer.Exit(code=1)
+        except Exception as e:
+            typer.secho(
+                f"Error during prune - all changes rolled back: {e}",
+                fg=typer.colors.RED
+            )
+            db.close()
+            raise typer.Exit(code=1)
+
+        typer.secho("=== PRUNE COMPLETED ===", fg=typer.colors.GREEN, bold=True)
+        typer.secho(
+            f"Successfully deleted {len(result.snapshots_deleted)} snapshots"
+            + (f" and {len(result.batches_deleted)} batches" if prune_orphans else ""),
+            fg=typer.colors.GREEN
+        )
+        if result.snapshots_deleted:
+            typer.secho(f"Deleted snapshot IDs: {sorted(result.snapshots_deleted)}", fg=typer.colors.BLUE)
+        if result.batches_deleted:
+            typer.secho(f"Deleted batches: {sorted(result.batches_deleted)}", fg=typer.colors.BLUE)
+        typer.secho(
+            f"Operation recorded in history. Use 'history' to view.",
+            fg=typer.colors.CYAN
+        )
+
+        db.close()
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        typer.secho(f"Unexpected error: {e}", fg=typer.colors.RED)
+        if 'db' in locals():
+            try:
+                db.close()
+            except Exception:
+                pass
+        raise typer.Exit(code=1)
+
+
 @app.command("audit-log", help="Query and export audit log with time range / operation type filters (CSV or JSON)")
 def audit_log(
     output: str = typer.Argument(
@@ -800,7 +1064,7 @@ def audit_log(
     ),
     operation_type: Optional[str] = typer.Option(
         None, "--type", "-t",
-        help="Operation type filter, comma-separated. Valid: init,import,merge,export,rollback,config"
+        help="Operation type filter, comma-separated. Valid: init,import,merge,export,rollback,config,prune"
     ),
     db_path: str = typer.Option(
         DEFAULT_DB_PATH, "--database",

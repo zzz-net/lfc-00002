@@ -49,3 +49,12 @@ class MergeConflict:
     quantity_2: int
     batch_id_1: str
     batch_id_2: str
+
+
+@dataclass
+class PruneResult:
+    snapshots_to_delete: List[Snapshot]
+    batches_to_delete: List[str]
+    orphan_batches: List[str]
+    snapshots_deleted: List[int]
+    batches_deleted: List[str]
