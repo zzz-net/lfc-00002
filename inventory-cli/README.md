@@ -15,7 +15,8 @@
 - ✅ **5 种冲突策略**：require_manual / first / last / sum / average
 - ✅ **严格原子性**：校验失败零写入，不污染快照
 - ✅ **3 层配置**：命令行 > 配置文件 > SQLite 持久化
-- ✅ **完整审计**：init/import/merge/export/rollback 全记录，跨重启可查
+- ✅ **完整审计**：init/import/merge/export/rollback/config 全记录，跨重启可查
+- ✅ **审计导出**：按时间范围和操作类型筛选，导出 CSV/JSON 审计日志
 - ✅ **快照回滚**：一键回滚到历史版本，无数据丢失
 - ✅ **详细报告**：导出含来源批次、差异报告、SKU 维度明细
 
@@ -258,6 +259,9 @@ inventory rollback [SNAPSHOT_ID] [--database PATH]
 
 # 配置
 inventory config [KEY] [VALUE] [--database PATH]
+
+# 审计日志导出
+inventory audit-log OUTPUT [--from TIME] [--to TIME] [--type TYPES] [--database PATH]
 
 # 批次
 inventory batches [--database PATH]

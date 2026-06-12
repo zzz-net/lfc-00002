@@ -214,6 +214,48 @@ class Database:
         rows = cursor.fetchall()
         return [row['sku'] for row in rows]
 
+    def get_history_filtered(
+        self,
+        from_time: Optional[str] = None,
+        to_time: Optional[str] = None,
+        operation_types: Optional[List[str]] = None,
+    ) -> List[HistoryEntry]:
+        conditions = []
+        params: list = []
+
+        if from_time:
+            conditions.append("timestamp >= ?")
+            params.append(from_time)
+        if to_time:
+            conditions.append("timestamp <= ?")
+            params.append(to_time)
+        if operation_types:
+            placeholders = ",".join("?" for _ in operation_types)
+            conditions.append(f"operation IN ({placeholders})")
+            params.extend(operation_types)
+
+        where = ""
+        if conditions:
+            where = "WHERE " + " AND ".join(conditions)
+
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"SELECT * FROM history {where} ORDER BY id DESC", params
+        )
+        rows = cursor.fetchall()
+        return [
+            HistoryEntry(
+                id=row["id"],
+                operation=row["operation"],
+                batch_id=row["batch_id"],
+                store_id=row["store_id"],
+                file_path=row["file_path"],
+                timestamp=datetime.fromisoformat(row["timestamp"]),
+                details=row["details"],
+            )
+            for row in rows
+        ]
+
     def get_unique_batches(self) -> List[str]:
         cursor = self.conn.cursor()
         cursor.execute('SELECT DISTINCT batch_id FROM inventory ORDER BY batch_id')

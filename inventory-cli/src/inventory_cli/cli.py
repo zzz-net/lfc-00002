@@ -1,5 +1,7 @@
 import typer
 import json
+import csv
+import os
 from typing import Optional, List
 from datetime import datetime
 from .db import Database
@@ -8,6 +10,8 @@ from .importer import InventoryImporter, ImportError
 from .merger import InventoryMerger, MergeError
 from .exporter import InventoryExporter, ExportError
 from .config import ConfigError
+
+VALID_OPERATION_TYPES = ["init", "import", "merge", "export", "rollback", "config"]
 
 app = typer.Typer(
     help="""
@@ -777,6 +781,176 @@ def list_batches(
     typer.secho("-" * 60)
     typer.secho(f"  {'TOTAL':<30}  {total_records:>5} records", fg=typer.colors.CYAN, bold=True)
     
+    db.close()
+
+
+@app.command("audit-log", help="Query and export audit log with time range / operation type filters (CSV or JSON)")
+def audit_log(
+    output: str = typer.Argument(
+        ...,
+        help="Output file path. Must end with .csv or .json to specify export format."
+    ),
+    from_time: Optional[str] = typer.Option(
+        None, "--from",
+        help="Start time filter (inclusive), ISO format e.g. '2025-01-01' or '2025-01-01T10:00:00'"
+    ),
+    to_time: Optional[str] = typer.Option(
+        None, "--to",
+        help="End time filter (inclusive), ISO format e.g. '2025-12-31' or '2025-12-31T23:59:59'"
+    ),
+    operation_type: Optional[str] = typer.Option(
+        None, "--type", "-t",
+        help="Operation type filter, comma-separated. Valid: init,import,merge,export,rollback,config"
+    ),
+    db_path: str = typer.Option(
+        DEFAULT_DB_PATH, "--database",
+        help="Path to SQLite database file"
+    )
+):
+    if not output.endswith('.csv') and not output.endswith('.json'):
+        typer.secho(
+            f"Error: Output file must end with .csv or .json, got '{output}'",
+            fg=typer.colors.RED
+        )
+        typer.secho(
+            "Example: inventory audit-log audit.csv --type import,merge",
+            fg=typer.colors.CYAN
+        )
+        raise typer.Exit(code=1)
+
+    if from_time:
+        try:
+            if 'T' not in from_time:
+                from_time_parsed = datetime.fromisoformat(from_time + "T00:00:00")
+            else:
+                from_time_parsed = datetime.fromisoformat(from_time)
+        except ValueError:
+            typer.secho(
+                f"Error: Invalid --from time format: '{from_time}'. Use ISO format like '2025-01-01' or '2025-01-01T10:00:00'.",
+                fg=typer.colors.RED
+            )
+            raise typer.Exit(code=1)
+    else:
+        from_time_parsed = None
+
+    if to_time:
+        try:
+            if 'T' not in to_time:
+                to_time_parsed = datetime.fromisoformat(to_time + "T23:59:59")
+            else:
+                to_time_parsed = datetime.fromisoformat(to_time)
+        except ValueError:
+            typer.secho(
+                f"Error: Invalid --to time format: '{to_time}'. Use ISO format like '2025-12-31' or '2025-12-31T23:59:59'.",
+                fg=typer.colors.RED
+            )
+            raise typer.Exit(code=1)
+    else:
+        to_time_parsed = None
+
+    if from_time_parsed and to_time_parsed and from_time_parsed > to_time_parsed:
+        typer.secho(
+            f"Error: --from ({from_time}) is after --to ({to_time}). Time range is invalid.",
+            fg=typer.colors.RED
+        )
+        raise typer.Exit(code=1)
+
+    op_types: Optional[List[str]] = None
+    if operation_type:
+        op_types = [t.strip().lower() for t in operation_type.split(",")]
+        invalid = [t for t in op_types if t not in VALID_OPERATION_TYPES]
+        if invalid:
+            typer.secho(
+                f"Error: Invalid operation type(s): {', '.join(invalid)}",
+                fg=typer.colors.RED
+            )
+            typer.secho(
+                f"Valid types: {', '.join(VALID_OPERATION_TYPES)}",
+                fg=typer.colors.YELLOW
+            )
+            raise typer.Exit(code=1)
+
+    if not os.path.exists(db_path):
+        typer.secho(
+            f"Error: Database file not found: {db_path}",
+            fg=typer.colors.RED
+        )
+        typer.secho(
+            "Run 'inventory init' first to create the database.",
+            fg=typer.colors.CYAN
+        )
+        raise typer.Exit(code=1)
+
+    db = get_db(db_path)
+
+    from_iso = from_time_parsed.isoformat() if from_time_parsed else None
+    to_iso = to_time_parsed.isoformat() if to_time_parsed else None
+
+    entries = db.get_history_filtered(
+        from_time=from_iso,
+        to_time=to_iso,
+        operation_types=op_types,
+    )
+
+    if not entries:
+        filter_desc = []
+        if from_time:
+            filter_desc.append(f"from {from_time}")
+        if to_time:
+            filter_desc.append(f"to {to_time}")
+        if op_types:
+            filter_desc.append(f"type={','.join(op_types)}")
+        filter_str = " ".join(filter_desc) if filter_desc else "(no filters)"
+        typer.secho(
+            f"No audit log entries found for filters: {filter_str}",
+            fg=typer.colors.YELLOW
+        )
+        db.close()
+        raise typer.Exit(code=0)
+
+    parent_dir = os.path.dirname(os.path.abspath(output))
+    if parent_dir and not os.path.exists(parent_dir):
+        os.makedirs(parent_dir, exist_ok=True)
+
+    rows = []
+    for entry in entries:
+        rows.append({
+            "timestamp": entry.timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+            "operation": entry.operation,
+            "batch_id": entry.batch_id or "",
+            "store_id": entry.store_id or "",
+            "file_path": entry.file_path or "",
+            "details": entry.details or "",
+        })
+
+    try:
+        if output.endswith('.csv'):
+            with open(output, 'w', encoding='utf-8', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=["timestamp", "operation", "batch_id", "store_id", "file_path", "details"])
+                writer.writeheader()
+                writer.writerows(rows)
+        else:
+            with open(output, 'w', encoding='utf-8') as f:
+                json.dump(rows, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        typer.secho(f"Error writing audit log: {str(e)}", fg=typer.colors.RED)
+        db.close()
+        raise typer.Exit(code=1)
+
+    typer.secho(
+        f"Exported {len(entries)} audit log entries to {output}",
+        fg=typer.colors.GREEN
+    )
+    if from_time or to_time:
+        time_desc = []
+        if from_time:
+            time_desc.append(f"from {from_time}")
+        if to_time:
+            time_desc.append(f"to {to_time}")
+        typer.secho(f"  Time range: {' '.join(time_desc)}", fg=typer.colors.BLUE)
+    if op_types:
+        typer.secho(f"  Operation types: {', '.join(op_types)}", fg=typer.colors.BLUE)
+
     db.close()
 
 
