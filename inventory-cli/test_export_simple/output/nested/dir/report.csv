@@ -1,0 +1,9 @@
+sku,quantity,store_id,batch_id,source_file
+SKU001,100,STORE001,batch_a,store_a.csv
+SKU002,50,STORE001,batch_a,store_a.csv
+SKU003,75,STORE001,batch_a,store_a.csv
+SKU004,200,STORE001,batch_a,store_a.csv
+
+# Export Metadata
+# Source Batches:,batch_a
+# Merge Strategy:,sum

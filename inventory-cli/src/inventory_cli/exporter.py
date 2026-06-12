@@ -1,5 +1,6 @@
 import csv
 import json
+import os
 from datetime import datetime
 from typing import List, Dict, Optional
 from .models import InventoryRecord, Snapshot
@@ -9,6 +10,13 @@ class ExportError(Exception):
     pass
 
 
+def _ensure_parent_dir(file_path: str):
+    """Ensure the parent directory of the given file path exists."""
+    parent_dir = os.path.dirname(os.path.abspath(file_path))
+    if parent_dir and not os.path.exists(parent_dir):
+        os.makedirs(parent_dir, exist_ok=True)
+
+
 class InventoryExporter:
     def export_csv(self, records: List[InventoryRecord], file_path: str,
                    source_batches: Optional[List[str]] = None,
@@ -16,6 +24,7 @@ class InventoryExporter:
         if not records:
             raise ExportError("No records to export")
         
+        _ensure_parent_dir(file_path)
         try:
             with open(file_path, 'w', encoding='utf-8', newline='') as f:
                 writer = csv.writer(f)
@@ -46,6 +55,7 @@ class InventoryExporter:
         if not records:
             raise ExportError("No records to export")
         
+        _ensure_parent_dir(file_path)
         try:
             data = {
                 'metadata': {
@@ -85,6 +95,7 @@ class InventoryExporter:
                      diff_report: Optional[Dict] = None):
         report = self._generate_report(records, include_diff, source_batches, strategy, diff_report)
         
+        _ensure_parent_dir(file_path)
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(report, f, indent=2, ensure_ascii=False)
